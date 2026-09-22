@@ -1,36 +1,175 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="row justify-content-center">
-  <div class="col-md-6 col-lg-5">
-    <div class="card shadow-sm border-0 mt-4">
+  <div class="col-lg-6 col-md-8">
+    <div class="card shadow-sm border-0 mt-4 position-relative overflow-hidden">
+      <div id="loginBusyOverlay"
+           class="d-none position-absolute top-0 start-0 w-100 h-100 align-items-center justify-content-center"
+           style="z-index: 20; background: rgba(248, 249, 250, 0.90);"
+           aria-live="polite" aria-label="Signing in">
+        <div class="text-center px-4">
+          <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+          <div class="fw-semibold mt-3">Signing in...</div>
+          <div class="small text-muted mt-1">Authenticating, please wait.</div>
+        </div>
+      </div>
+
       <div class="card-body p-4">
-        <h3 class="mb-3">Login</h3>
-        <p class="text-muted mb-4">Admin requires password. Read-only skips authentication.</p>
+        <h3 class="mb-2">DHCP Manager Login</h3>
+        <p class="text-muted mb-4">Sign in with your Active Directory account.</p>
 
-        <form method="POST" class="mb-3">
+        <h5>Active Directory</h5>
+        <p class="small text-muted">Authenticated through Linux PAM/VAS. Your AD alias must already be approved in Access Control.</p>
+
+        {% if crypto_ready %}
+        <form id="adLoginForm" method="POST">
+          <input type="hidden" name="mode" value="ad">
+          <input type="hidden" name="encrypted_credentials" id="encrypted_credentials">
           <div class="mb-3">
-            <label class="form-label">Username</label>
-            <input name="username" class="form-control" placeholder="{{ admin_username }}" autocomplete="username">
+            <label class="form-label">AD alias</label>
+            <input name="username" id="username" class="form-control" placeholder="e.g. jsmith" autocomplete="username" autofocus required>
           </div>
           <div class="mb-3">
-            <label class="form-label">Password</label>
-            <input name="password" type="password" class="form-control" autocomplete="current-password">
+            <label class="form-label">AD password</label>
+            <!-- Plaintext password input is intentionally excluded from submitted form fields. -->
+            <input id="password" type="password" class="form-control" autocomplete="current-password" required>
           </div>
-
-          <button type="submit" class="btn btn-primary w-100 mb-2">Login</button>
+          <div id="cryptoError" class="alert alert-danger d-none py-2" role="alert"></div>
+          <button id="adLoginButton" type="submit" class="btn btn-success w-100">AD Login</button>
         </form>
-
-        <form method="POST">
-          <input type="hidden" name="mode" value="readonly">
-          <button type="submit" class="btn btn-outline-secondary w-100">Read Only Login</button>
-        </form>
+        {% else %}
+        <div class="alert alert-danger">
+          Secure AD login is unavailable because the server login key could not be loaded. Contact the DHCP Manager administrator.
+        </div>
+        {% endif %}
 
         <hr class="my-4">
-        <small class="text-muted">
-          Tip: set <code>ADMIN_PASSWORD</code> in <code>config.py</code>.
-        </small>
+        <div class="row g-2">
+          <div class="col-sm-6">
+            <form method="POST">
+              <input type="hidden" name="mode" value="readonly">
+              <button id="readonlyLoginButton" type="submit" class="btn btn-outline-secondary w-100">Read Only Login</button>
+            </form>
+          </div>
+          <div class="col-sm-6">
+            <a id="localManagerLink" href="{{ url_for('local_manager_login') }}" class="btn btn-outline-dark w-100">Local Manager Login</a>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </div>
+
+{% if crypto_ready %}
+<script>
+(() => {
+  const PUBLIC_KEY_PEM = {{ public_key_pem | tojson }};
+  const LOGIN_CHALLENGE = {{ login_challenge | tojson }};
+  const form = document.getElementById("adLoginForm");
+  const usernameInput = document.getElementById("username");
+  const passwordInput = document.getElementById("password");
+  const encryptedInput = document.getElementById("encrypted_credentials");
+  const loginButton = document.getElementById("adLoginButton");
+  const readonlyButton = document.getElementById("readonlyLoginButton");
+  const localManagerLink = document.getElementById("localManagerLink");
+  const busyOverlay = document.getElementById("loginBusyOverlay");
+  const errorBox = document.getElementById("cryptoError");
+  let submitInProgress = false;
+
+  function showError(message) {
+    errorBox.textContent = message;
+    errorBox.classList.remove("d-none");
+  }
+
+  function setLoginBusy() {
+    form.setAttribute("aria-busy", "true");
+    usernameInput.readOnly = true;
+    passwordInput.readOnly = true;
+    loginButton.disabled = true;
+    loginButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Signing in...';
+    readonlyButton.disabled = true;
+    localManagerLink.classList.add("disabled");
+    localManagerLink.setAttribute("aria-disabled", "true");
+    localManagerLink.setAttribute("tabindex", "-1");
+    busyOverlay.classList.remove("d-none");
+    busyOverlay.classList.add("d-flex");
+  }
+
+  function pemToArrayBuffer(pem) {
+    const base64 = pem
+      .replace("-----BEGIN PUBLIC KEY-----", "")
+      .replace("-----END PUBLIC KEY-----", "")
+      .replace(/\s/g, "");
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte);
+    }
+    return btoa(binary);
+  }
+
+  async function importPublicKey() {
+    return crypto.subtle.importKey(
+      "spki",
+      pemToArrayBuffer(PUBLIC_KEY_PEM),
+      { name: "RSA-OAEP", hash: "SHA-256" },
+      false,
+      ["encrypt"]
+    );
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    errorBox.classList.add("d-none");
+
+    if (!window.isSecureContext || !window.crypto || !window.crypto.subtle) {
+      showError("Secure AD login requires HTTPS. Open this site using https:// and try again.");
+      return;
+    }
+
+    if (submitInProgress) {
+      return;
+    }
+
+    submitInProgress = true;
+    loginButton.disabled = true;
+    loginButton.textContent = "Preparing secure login...";
+
+    try {
+      const publicKey = await importPublicKey();
+      const payload = JSON.stringify({
+        password: passwordInput.value,
+        challenge: LOGIN_CHALLENGE,
+      });
+      const encoded = new TextEncoder().encode(payload);
+      const encrypted = await crypto.subtle.encrypt(
+        { name: "RSA-OAEP" },
+        publicKey,
+        encoded
+      );
+
+      encryptedInput.value = arrayBufferToBase64(encrypted);
+      passwordInput.value = "";
+      setLoginBusy();
+      form.submit();
+    } catch (error) {
+      passwordInput.value = "";
+      submitInProgress = false;
+      loginButton.disabled = false;
+      loginButton.textContent = "AD Login";
+      showError("Unable to securely prepare AD login. Reload the page and try again.");
+    }
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

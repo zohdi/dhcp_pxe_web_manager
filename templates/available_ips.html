@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Available IPs - DHCP Manager</title>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #f7f9fb; padding: 32px; }
+    .page-card { background: white; border-radius: 12px; box-shadow: 0 3px 10px rgba(0,0,0,0.08); padding: 24px; }
+    .ip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 8px; }
+    .ip-pill { font-family: monospace; background: #f4f6f8; border: 1px solid #dde2e6; border-radius: 8px; padding: 8px 10px; }
+    .scan-meta { font-size: .9rem; color: #6c757d; }
+  </style>
+</head>
+<body>
+<nav class="navbar navbar-dark bg-dark mb-4 rounded">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="{{ url_for('index') }}">DHCP Manager</a>
+    <div class="d-flex align-items-center gap-2">
+      <span class="text-white-50">{{ username }}</span>
+      <span class="badge bg-{% if role == 'manager' %}success{% else %}primary{% endif %}">{{ role|replace('_',' ')|upper }}</span>
+      <a class="btn btn-sm btn-outline-light" href="{{ url_for('logout') }}">Logout</a>
+    </div>
+  </div>
+</nav>
+
+<div class="page-card">
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3">
+    <div>
+      <h3 class="mb-1">Available IPs</h3>
+      <div class="scan-meta">
+        {% if generated_at %}
+          Cache generated: <code>{{ generated_at }}</code>
+          {% if stale %}<span class="badge bg-warning text-dark ms-2">STALE</span>{% else %}<span class="badge bg-success ms-2">CURRENT</span>{% endif %}
+        {% else %}
+          <span class="badge bg-warning text-dark">NO CACHE YET</span>
+        {% endif %}
+      </div>
+      <div class="scan-meta mt-1">Only IPs inside subnets you are authorized to manage are shown.</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">← Back</a>
+      {% if can_manage_global %}
+      <form method="POST" action="{{ url_for('available_ips_refresh') }}" id="refreshScanForm">
+        <button class="btn btn-primary" id="refreshScanButton" type="submit">🔎 Refresh Scan</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}<div class="alert alert-{{ category }}" data-auto-dismiss="flash">{{ message }}</div>{% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  {% if cache_error %}<div class="alert alert-danger">{{ cache_error }}</div>{% endif %}
+  {% if stale and generated_at %}<div class="alert alert-warning">This cache is older than the configured refresh age. A Manager can run a fresh scan now.</div>{% endif %}
+
+  {% if subnets %}
+    {% for subnet in subnets %}
+      <section class="border rounded p-3 mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h5 class="mb-0"><code>{{ subnet.cidr }}</code></h5>
+          <span class="badge bg-dark">{{ subnet.available_ips|length }} available</span>
+        </div>
+        {% if subnet.dynamic_ranges %}
+          <div class="scan-meta mb-2">
+            Dynamic range(s) excluded:
+            {% for r in subnet.dynamic_ranges %}<code>{{ r.start }}–{{ r.end }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+          </div>
+        {% endif %}
+        <div class="ip-grid">
+          {% for ip in subnet.available_ips %}<div class="ip-pill">{{ ip }}</div>{% endfor %}
+        </div>
+      </section>
+    {% endfor %}
+  {% else %}
+    <div class="alert alert-info mb-0">
+      No cached available IPs are visible for your authorized subnet scope.
+      {% if can_manage_global %}Run <strong>Refresh Scan</strong> to create/update the cache.{% endif %}
+    </div>
+  {% endif %}
+</div>
+
+<script src="{{ url_for('static', filename='flash_auto_dismiss.js') }}"></script>
+<script>
+const refreshForm = document.getElementById('refreshScanForm');
+if (refreshForm) {
+  refreshForm.addEventListener('submit', function () {
+    const button = document.getElementById('refreshScanButton');
+    if (button) {
+      button.disabled = true;
+      button.textContent = '⏳ Scanning...';
+    }
+  });
+}
+</script>
+</body>
+</html>
