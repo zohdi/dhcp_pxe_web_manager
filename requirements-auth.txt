@@ -1,0 +1,6 @@
+# Existing web dependencies plus AD/PAM integration
+Flask>=2.2
+bcrypt>=4.0
+python-pam>=2.0.2; platform_system == "Linux"
+cryptography>=41.0
+itsdangerous>=2.1
