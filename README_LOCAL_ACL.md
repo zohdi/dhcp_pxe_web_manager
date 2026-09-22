@@ -4,8 +4,10 @@ The `main` branch keeps local authentication while adding the ACL, VLAN-scoping 
 
 ## Authentication
 - Built-in bcrypt `Admin` remains the break-glass/global Manager and does not require an ACL row.
-- Additional local Linux users authenticate through PAM (default service: `login`).
-- PAM users must also be explicitly present in Access Control.
+- Additional **local Linux users** authenticate through PAM (default service: `login`).
+- A PAM username is eligible only if it is physically present in `/etc/passwd`.
+- NSS/VAS/AD-only identities are rejected before PAM even if the Linux host can resolve them through `getent` or another identity provider.
+- Local PAM users must also be explicitly present in Access Control.
 - PAM users can be Manager or VLAN Editor.
 - Passwordless Read Only mode remains available.
 - Authenticated sessions expire after 30 minutes of inactivity on the next request.
@@ -22,7 +24,7 @@ python3 -m pip install -r requirements-auth.txt
 - VLAN Editor: reservations and Boot Device operations only inside assigned IPv4 CIDRs.
 - ACL checks are server-side, not only UI filtering.
 - VLAN mappings are application authorization metadata; they do not rewrite DHCP subnet declarations.
-- The built-in Admin can manage VLAN mappings, PAM-user ACLs and audit history.
+- The built-in Admin can manage VLAN mappings, local-user ACLs and audit history.
 
 ## Available IP discovery
 The scanner rereads live state on each refresh:
