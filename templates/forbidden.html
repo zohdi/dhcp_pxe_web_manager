@@ -1,0 +1,4 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="card shadow-sm border-0 mt-5"><div class="card-body p-5 text-center"><h2>403 — Access denied</h2><p class="text-muted">Your current role or VLAN scope does not permit this operation.</p><a href="{{ url_for('index') }}" class="btn btn-primary">Back to DHCP Manager</a></div></div>
+{% endblock %}

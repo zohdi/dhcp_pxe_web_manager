@@ -1,36 +1,72 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="row justify-content-center">
-  <div class="col-md-6 col-lg-5">
-    <div class="card shadow-sm border-0 mt-4">
-      <div class="card-body p-4">
-        <h3 class="mb-3">Login</h3>
-        <p class="text-muted mb-4">Admin requires password. Read-only skips authentication.</p>
+  <div class="col-lg-6 col-md-8">
+    <div class="card shadow-sm border-0 mt-4 position-relative overflow-hidden">
+      <div id="loginBusyOverlay"
+           class="d-none position-absolute top-0 start-0 w-100 h-100 align-items-center justify-content-center"
+           style="z-index: 20; background: rgba(248, 249, 250, 0.90);"
+           aria-live="polite" aria-label="Signing in">
+        <div class="text-center px-4">
+          <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+          <div class="fw-semibold mt-3">Signing in...</div>
+          <div class="small text-muted mt-1">Authenticating, please wait.</div>
+        </div>
+      </div>
 
-        <form method="POST" class="mb-3">
+      <div class="card-body p-4">
+        <h3 class="mb-2">DHCP Manager Login</h3>
+        <p class="text-muted mb-4">Use the built-in Admin account or an ACL-approved local Linux user.</p>
+
+        <form id="loginForm" method="POST">
+          <input type="hidden" name="mode" value="login">
           <div class="mb-3">
             <label class="form-label">Username</label>
-            <input name="username" class="form-control" placeholder="{{ admin_username }}" autocomplete="username">
+            <input name="username" id="username" class="form-control" autocomplete="username" autofocus required>
+            <div class="form-text"><strong>Built-in Admin</strong> uses the configured bcrypt password. A <strong>Local Linux user</strong> authenticates through PAM and must be approved in Access Control.</div>
           </div>
           <div class="mb-3">
             <label class="form-label">Password</label>
-            <input name="password" type="password" class="form-control" autocomplete="current-password">
+            <input name="password" id="password" type="password" class="form-control" autocomplete="current-password" required>
           </div>
-
-          <button type="submit" class="btn btn-primary w-100 mb-2">Login</button>
-        </form>
-
-        <form method="POST">
-          <input type="hidden" name="mode" value="readonly">
-          <button type="submit" class="btn btn-outline-secondary w-100">Read Only Login</button>
+          <button id="loginButton" type="submit" class="btn btn-success w-100">Login</button>
         </form>
 
         <hr class="my-4">
-        <small class="text-muted">
-          Tip: set <code>ADMIN_PASSWORD</code> in <code>config.py</code>.
-        </small>
+        <form id="readonlyLoginForm" method="POST">
+          <input type="hidden" name="mode" value="readonly">
+          <button id="readonlyLoginButton" type="submit" class="btn btn-outline-secondary w-100">Read Only Login</button>
+        </form>
       </div>
     </div>
   </div>
 </div>
+
+<script>
+(() => {
+  const form = document.getElementById("loginForm");
+  const usernameInput = document.getElementById("username");
+  const passwordInput = document.getElementById("password");
+  const loginButton = document.getElementById("loginButton");
+  const readonlyButton = document.getElementById("readonlyLoginButton");
+  const busyOverlay = document.getElementById("loginBusyOverlay");
+  let submitInProgress = false;
+
+  form.addEventListener("submit", (event) => {
+    if (submitInProgress) {
+      event.preventDefault();
+      return;
+    }
+    submitInProgress = true;
+    form.setAttribute("aria-busy", "true");
+    usernameInput.readOnly = true;
+    passwordInput.readOnly = true;
+    loginButton.disabled = true;
+    loginButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Signing in...';
+    readonlyButton.disabled = true;
+    busyOverlay.classList.remove("d-none");
+    busyOverlay.classList.add("d-flex");
+  });
+})();
+</script>
 {% endblock %}

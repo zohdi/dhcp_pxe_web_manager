@@ -1,0 +1,87 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div><h2 class="mb-0">Access Control</h2><div class="text-muted">Manager-owned local Linux users and VLAN CIDR scopes. This does not edit <code>dhcpd.conf</code>.</div></div>
+  <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Back</a>
+</div>
+
+<div class="alert alert-warning"><strong>Important:</strong> Linux/PAM authentication alone grants nothing. A Linux username must be listed below. VLAN Editors can only manage reservation IPs inside their assigned CIDRs.</div>
+
+<div class="row g-4">
+  <div class="col-lg-5">
+    <div class="card shadow-sm border-0"><div class="card-body">
+      {% if edit_vlan %}
+      <h5>Edit VLAN → CIDR mapping</h5>
+      <div class="small text-muted mb-3">Editing keeps the same internal VLAN ID, so existing user assignments remain attached.</div>
+      <form method="POST" action="{{ url_for('access_control_edit_vlan', vlan_id=edit_vlan.id) }}" class="row g-2 mb-3">
+        <div class="col-6"><label class="form-label small">VLAN name</label><input class="form-control" name="name" value="{{ proposed_name if proposed_name is not none else edit_vlan.name }}" required></div>
+        <div class="col-6"><label class="form-label small">CIDR</label><input class="form-control" name="cidr" value="{{ proposed_cidr if proposed_cidr is not none else edit_vlan.cidr }}" required></div>
+        {% if affected_entries %}
+        <div class="col-12">
+          <div class="alert alert-warning mb-0">
+            <strong>Confirm CIDR change:</strong> {{ affected_entries|length }} existing DHCP reservation{% if affected_entries|length != 1 %}s{% endif %} currently inside <code>{{ edit_vlan.cidr }}</code> would fall outside the new CIDR.
+            <div class="small mt-2">This does not delete those DHCP records, but VLAN Editors assigned to this VLAN will no longer be authorized for those IPs.</div>
+            <ul class="small mb-0 mt-2">
+              {% for entry in affected_entries[:10] %}<li>{{ entry.hostname }} — <code>{{ entry.ip }}</code></li>{% endfor %}
+              {% if affected_entries|length > 10 %}<li>…and {{ affected_entries|length - 10 }} more</li>{% endif %}
+            </ul>
+          </div>
+          <input type="hidden" name="confirm_change" value="1">
+        </div>
+        {% endif %}
+        <div class="col-12 d-flex gap-2">
+          {% if affected_entries %}<button class="btn btn-warning">Confirm &amp; Save</button>{% else %}<button class="btn btn-primary">Save Changes</button>{% endif %}
+          <a class="btn btn-outline-secondary" href="{{ url_for('access_control') }}">Cancel</a>
+        </div>
+      </form>
+      {% else %}
+      <h5>VLAN → CIDR mappings</h5>
+      <form method="POST" action="{{ url_for('access_control_add_vlan') }}" class="row g-2 mb-3">
+        <div class="col-5"><input class="form-control" name="name" placeholder="TEAM-X" required></div>
+        <div class="col-5"><input class="form-control" name="cidr" placeholder="10.50.10.0/24" required></div>
+        <div class="col-2"><button class="btn btn-success w-100">Add</button></div>
+      </form>
+      {% endif %}
+
+      {% if not vlans %}<div class="text-muted">No VLAN mappings configured yet.</div>{% endif %}
+      <table class="table table-sm align-middle"><tbody>
+      {% for vlan in vlans %}
+      <tr>
+        <td><strong>{{ vlan.name }}</strong></td>
+        <td><code>{{ vlan.cidr }}</code></td>
+        <td class="text-end">
+          <div class="d-inline-flex gap-1">
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('access_control', edit_vlan=vlan.id) }}">Edit</a>
+            <form method="POST" action="{{ url_for('access_control_delete_vlan', vlan_id=vlan.id) }}"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete {{ vlan.name }} ACL mapping? Assigned editor scope will be revoked.');">Delete</button></form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody></table>
+    </div></div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card shadow-sm border-0"><div class="card-body">
+      <h5>Local Linux users</h5>
+      <form method="POST" action="{{ url_for('access_control_upsert_principal') }}">
+        <div class="row g-2 mb-2">
+          <div class="col-md-5"><input class="form-control" name="alias" placeholder="Linux username" required></div>
+          <div class="col-md-4"><select class="form-select" name="role" required><option value="vlan_editor">VLAN Editor</option><option value="manager">Manager</option></select></div>
+          <div class="col-md-3"><button class="btn btn-primary w-100">Save / Update</button></div>
+        </div>
+        <div class="border rounded p-2 mb-3">
+          <div class="small text-muted mb-1">VLAN assignments (required for VLAN Editor; ignored for Manager)</div>
+          {% if vlans %}{% for vlan in vlans %}<div class="form-check form-check-inline"><input class="form-check-input" type="checkbox" name="vlan_ids" value="{{ vlan.id }}" id="vlan-{{ vlan.id }}"><label class="form-check-label" for="vlan-{{ vlan.id }}">{{ vlan.name }} <code>{{ vlan.cidr }}</code></label></div>{% endfor %}{% else %}<span class="text-muted">Create VLAN mappings first.</span>{% endif %}
+        </div>
+      </form>
+      {% if not principals %}<div class="text-muted">ACL is empty — no local Linux user currently has access.</div>{% endif %}
+      <table class="table align-middle"><thead><tr><th>Linux username</th><th>Role</th><th>Scope</th><th></th></tr></thead><tbody>
+      {% for p in principals %}<tr><td><code>{{ p.alias }}</code></td><td>{{ p.role|replace('_',' ')|title }}</td><td>{% if p.role == 'manager' %}<span class="badge bg-success">ALL</span>{% else %}{% for vlan in p.vlans %}<span class="badge bg-primary me-1">{{ vlan.name }}</span>{% endfor %}{% endif %}</td><td class="text-end"><form method="POST" action="{{ url_for('access_control_delete_principal', alias=p.alias) }}"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove Linux-user access for {{ p.alias }}?');">Remove</button></form></td></tr>{% endfor %}
+      </tbody></table>
+    </div></div>
+  </div>
+</div>
+
+<div class="card shadow-sm border-0 mt-4"><div class="card-body"><h5>Recent audit events</h5><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Time</th><th>Principal</th><th>Source</th><th>Action</th><th>Target/IP</th><th>Result</th><th>Details</th></tr></thead><tbody>{% for a in audit %}<tr><td class="text-nowrap">{{ a.created_at }}</td><td>{{ a.principal }}</td><td>{{ a.auth_source }}</td><td><code>{{ a.action }}</code></td><td>{{ a.target or '' }} {% if a.ip %}<code>{{ a.ip }}</code>{% endif %}</td><td><span class="badge {% if a.result == 'SUCCESS' %}bg-success{% elif a.result == 'DENIED' %}bg-danger{% else %}bg-warning text-dark{% endif %}">{{ a.result }}</span></td><td class="small">{{ a.details or '' }}</td></tr>{% endfor %}</tbody></table></div></div></div>
+{% endblock %}
