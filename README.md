@@ -1,444 +1,218 @@
-# DHCP Manager - Refactored Version
+# DHCP/PXE Web Manager — Local ACL Edition
 
-A professional, production-ready DHCP server management tool with PXE boot support.
+A Flask + CLI tool for managing ISC DHCP reservations, PXE/iPXE boot profiles, VLAN-scoped access, and available reservation IPs.
 
-## 🎯 Overview
+This README describes the **`main`** branch.
 
-This refactored version eliminates all external script dependencies and provides a clean, modular Python codebase for managing ISC DHCP server configurations and PXE boot settings.
+## Maintained branches
 
-## ✨ Key Improvements
+| Branch | Purpose |
+|---|---|
+| `main` | **This branch** — built-in Admin + ACL-approved local Linux users + Available IP scanner |
+| `ad_acl_http` | AD/VAS ACL edition with HTTP-compatible RSA login envelope |
+| `ad_acl_https` | AD/VAS ACL edition with HTTPS/Web Crypto login |
+| `autodeploy_web_dhcp` | Local-auth edition with first-run DHCP/TFTP/PXE setup wizard |
 
-### Eliminated External Dependencies
-- ✅ **`convert.sh`** → Replaced with `PXEBootManager.ip_to_hex()` and `hex_to_ip()`
-- ✅ **`manage_links_from_ip.py`** → Integrated into `PXEBootManager` class
+## Features
 
-### Code Quality Enhancements
-- ✅ **Removed duplication** - Consolidated `colors.py` and `logger.py`
-- ✅ **Type hints** - Added throughout for better IDE support
-- ✅ **Custom exceptions** - Specific error types for better error handling
-- ✅ **Validators module** - Centralized input validation
-- ✅ **Configuration module** - Single source of truth for all settings
-- ✅ **Comprehensive logging** - Better debugging and audit trail
-- ✅ **Unit tests** - Comprehensive test coverage
+- ISC DHCP reservation add/edit/delete
+- PXELINUX and iPXE Boot Device management
+- Built-in bcrypt Admin account
+- ACL-approved local Linux users with Manager or VLAN Editor roles
+- Passwordless Read Only mode
+- Server-side VLAN/CIDR authorization
+- Audit log and idle session timeout
+- Available-IP discovery using live DHCP state, Nmap, and parallel ping
+- Available-IP selector on Add/Edit reservation pages
+- Optional systemd timer for recurring scans
 
-### Architecture Improvements
-- ✅ **Separation of concerns** - Clear module boundaries
-- ✅ **Single Responsibility Principle** - Each class has one job
-- ✅ **Dependency Injection** - Easier testing and configuration
-- ✅ **Error handling** - Graceful degradation and rollback
-
-## 📁 Project Structure
-
-```
-dhcp_manager/
-├── config.py                    # Centralized configuration
-├── exceptions.py                # Custom exception classes
-│
-├── utils/                       # Utility modules
-│   ├── __init__.py
-│   ├── colors.py               # Terminal colors
-│   ├── logger.py               # Logging setup
-│   └── validators.py           # Input validation
-│
-├── managers/                    # Core business logic
-│   ├── __init__.py
-│   ├── dhcp_manager.py         # DHCP configuration management
-│   └── pxe_manager.py          # PXE boot management
-│
-├── cli.py                       # Command-line interface
-├── web.py                       # Flask web interface
-│
-├── templates/                   # HTML templates
-│   ├── layout.html
-│   ├── index.html
-│   └── add_edit.html
-│
-└── tests/                       # Unit tests
-    ├── __init__.py
-    └── test_dhcp_manager.py
-```
-
-## 🚀 Installation
-
-### Prerequisites
+## Clone this branch
 
 ```bash
-# Install required packages
-sudo apt-get update
-sudo apt-get install -y isc-dhcp-server bind9 python3 python3-pip
-
-# Install Python dependencies
-pip3 install flask
-```
-
-### Setup
-
-```bash
-# Clone or copy the project
 cd /opt
-git clone <your-repo> dhcp_manager
-cd dhcp_manager
-
-# Make CLI executable
-chmod +x cli.py web.py
-
-# Optional: Create symlink for easy access
-sudo ln -s /opt/dhcp_manager/cli.py /usr/local/bin/dhcp-manager
+sudo git clone -b main https://github.com/zohdi/dhcp_pxe_web_manager.git dhcp_manager
+cd /opt/dhcp_manager
 ```
 
-## 📖 Usage
+## Prerequisites
 
-### Command-Line Interface
+Ubuntu/Debian example:
 
 ```bash
-# List all DHCP entries
-./cli.py list
-
-# Add a new entry
-./cli.py add --hostname server1 --mac aa:bb:cc:dd:ee:ff --ip 192.168.1.10
-
-# Query an entry
-./cli.py query server1
-
-# Modify an entry
-./cli.py modify server1 --ip 192.168.1.20
-
-# Remove an entry
-./cli.py remove server1
+sudo apt-get update
+sudo apt-get install -y isc-dhcp-server bind9 nmap python3 python3-pip
+python3 -m pip install -r requirements-auth.txt
 ```
 
+This branch assumes DHCP/PXE is already configured. For a first-run setup wizard, use `autodeploy_web_dhcp`.
 
+## Authentication
 
-## Dynamic PXE/iPXE boot profiles
+### Built-in Admin
 
-The existing legacy PXELINUX feature remains the source of truth for classic PXE clients: selecting a Boot Device creates or updates a per-client symlink under `pxelinux.cfg/<IP_HEX>`.
-
-The iPXE layer mirrors the same Boot Device choice using generated IP-specific scripts. One GUI selection updates both worlds because the tool cannot know in advance whether a machine will boot as legacy PXE or iPXE.
-
-```text
-/var/lib/tftpboot/pxelinux.cfg/default          # existing PXELINUX menu
-/var/lib/tftpboot/pxelinux.cfg/centos-8.5      # auto-discovered GUI option
-/var/lib/tftpboot/pxelinux.cfg/debian          # auto-discovered GUI option
-/var/lib/tftpboot/pxelinux.cfg/hdd0            # auto-discovered once only
-/var/lib/tftpboot/pxelinux.cfg/hdd1            # auto-discovered once only
-/var/lib/tftpboot/pxelinux.cfg/C0A8010A -> centos-8.5
-
-/var/lib/tftpboot/ipxe/ipxe.ipxe               # main dispatcher handed to iPXE clients
-/var/lib/tftpboot/ipxe/default.ipxe            # optional default iPXE profile/menu
-/var/lib/tftpboot/ipxe/rocky-9.ipxe            # optional native iPXE profile/menu
-/var/lib/tftpboot/ipxe/clients/192.168.1.10.ipxe
-```
-
-### iPXE flow
-
-1. Normal PXE firmware receives `undionly.kpxe` for BIOS or `ipxe.efi` for UEFI.
-2. Once iPXE starts and asks DHCP again, DHCP gives it `ipxe/ipxe.ipxe`.
-3. `ipxe/ipxe.ipxe` runs `dhcp`, then tries the generated IP-specific script:
-
-   ```ipxe
-   chain --replace http://<dhcp-manager>:5000/ipxe/clients/${ip}.ipxe || goto try_default
-   chain --replace http://<dhcp-manager>:5000/ipxe/default.ipxe || goto local_disk
-   sanboot --no-describe --drive 0x80
-   ```
-
-4. If no IP/default iPXE file exists, the client boots local disk 0.
-
-### Dynamic Boot Device drop-down
-
-The web GUI discovers Boot Device choices dynamically from:
-
-- regular non-symlink files under `pxelinux.cfg`, for example `default`, `centos-8.5`, `debian`, `hdd0`, `hdd1`, `rocky-9`
-- regular top-level files under `ipxe`, for example `default.ipxe`, `rocky-9.ipxe`
-
-Generated client files under `ipxe/clients/` and PXELINUX IP symlinks are intentionally hidden. Local disk aliases are de-duplicated, so `hdd0` and `hdd1` appear once.
-
-### PXELINUX to iPXE translation
-
-When a selected Boot Device exists only as `pxelinux.cfg/<profile>`, DHCP Manager parses common PXELINUX Linux entries and generates an iPXE equivalent for the client. It reuses the same `KERNEL`/`LINUX`, `INITRD`, and `APPEND initrd=...` paths, loading them by TFTP. Native top-level `ipxe/<profile>.ipxe` files take precedence when present.
-
-Supported common PXELINUX shape:
-
-```text
-DEFAULT install
-LABEL install
-  KERNEL images/centos-8.5/vmlinuz
-  APPEND initrd=images/centos-8.5/initrd.img inst.repo=http://mirror/centos/8.5 quiet
-```
-
-Useful translation commands:
+The built-in Admin is independent of PAM and does not require an ACL row.
 
 ```bash
-# Preview generated iPXE syntax from pxelinux.cfg/centos-8.5
-./cli.py ipxe translate centos-8.5
-
-# Write a reusable native profile to /var/lib/tftpboot/ipxe/centos-8.5.ipxe
-sudo ./cli.py ipxe translate centos-8.5 --write
+export DHCP_MANAGER_USERNAME=Admin
+export DHCP_MANAGER_PASSWORD_HASH='<bcrypt hash>'
+export DHCP_MANAGER_SECRET_KEY='use-a-long-random-secret'
 ```
 
-### Configure iPXE support
+Generate a bcrypt hash:
 
-Edit `config.py`:
+```bash
+python3 - <<'PY'
+import bcrypt, getpass
+pw = getpass.getpass("New Admin password: ").encode()
+print(bcrypt.hashpw(pw, bcrypt.gensalt()).decode())
+PY
+```
+
+### Local Linux users
+
+Additional users must pass all three checks:
+
+1. username is physically present in `/etc/passwd`
+2. username exists and is enabled in the application ACL
+3. PAM authentication succeeds
+
+The local-account check intentionally does not rely on NSS/`getent`, so VAS/AD-only identities are rejected on this branch.
+
+The PAM service defaults to `login`:
+
+```bash
+export DHCP_MANAGER_PAM_SERVICE=login
+```
+
+### Roles
+
+- **Manager** — full application access
+- **VLAN Editor** — reservations and Boot Device operations only inside assigned VLAN CIDRs
+- **Read Only** — global view, no writes
+
+## First ACL setup
+
+The ACL database starts empty and is not committed to Git.
+
+1. Sign in with the built-in Admin.
+2. Open **Access Control**.
+3. Add VLAN name/CIDR mappings managed by this application.
+4. Add local Linux usernames.
+5. Assign Manager or VLAN Editor.
+6. Assign VLANs to each VLAN Editor.
+
+Default ACL path:
+
+```text
+data/access_control.db
+```
+
+## Available IP discovery
+
+The scanner:
+
+1. parses active `dhcpd.conf`
+2. scans only DHCP subnets that exactly match enabled VLAN/CIDR mappings
+3. excludes network/broadcast, routers, dynamic ranges, fixed reservations and active leases
+4. runs `nmap -sn -n --disable-arp-ping`
+5. optionally checks remaining candidates in parallel with `ping -c1`
+6. writes `data/available_ips.json`
+
+Dynamic DHCP ranges are parsed from the live configuration; they are not hard-coded.
+
+Create the first cache:
+
+```bash
+sudo python3 refresh_available_ips.py
+```
+
+Install the optional daily timer:
+
+```bash
+sudo ./install_available_ip_timer.sh "$PWD"
+```
+
+Check it:
+
+```bash
+systemctl status dhcp-manager-available-ips.timer
+systemctl list-timers dhcp-manager-available-ips.timer
+```
+
+The cache is advisory only; Add/Edit performs a live re-check before changing DHCP configuration.
+
+## Start the web UI
+
+```bash
+sudo python3 web.py
+```
+
+Open:
+
+```text
+http://<dhcp-manager-ip>:5000
+```
+
+## CLI / PXE examples
+
+```bash
+sudo ./cli.py list
+sudo ./cli.py add --hostname server1 --mac aa:bb:cc:dd:ee:ff --ip 192.168.1.10
+sudo ./cli.py modify server1 --ip 192.168.1.20
+./cli.py ipxe profiles
+./cli.py ipxe snippet
+sudo ./cli.py ipxe install-default
+sudo ./cli.py boot 192.168.1.10 rocky-9
+```
+
+Set the generated iPXE base URL in `config.py`:
 
 ```python
 IPXE_HTTP_BASE_URL = "http://<dhcp-manager-ip>:5000"
 ```
 
-Install the main dispatcher into the TFTP iPXE directory:
+## Runtime state not stored in Git
 
-```bash
-sudo ./cli.py ipxe install-default
+```text
+data/access_control.db
+data/available_ips.json
 ```
 
-Print the DHCP snippet and paste it inside the relevant ISC DHCP `subnet` or `shared-network` block:
+## Testing
 
 ```bash
-./cli.py ipxe snippet
+python3 -m pytest -q
 ```
 
-Validate and restart DHCP:
+Core tests can also be run with:
+
+```bash
+python3 -m unittest tests/test_dhcp_manager.py
+```
+
+## Troubleshooting
+
+Validate DHCP:
 
 ```bash
 sudo dhcpd -t -cf /etc/dhcp/dhcpd.conf
-sudo systemctl restart isc-dhcp-server
 ```
-
-### Useful CLI commands
-
-```bash
-# Show dynamically discovered boot profiles
-./cli.py ipxe profiles
-
-# Set both legacy PXELINUX symlink and IP-specific iPXE override
-sudo ./cli.py boot 192.168.1.10 rocky-9
-
-# Create/update only the generated IP-specific iPXE file
-sudo ./cli.py ipxe set-client 192.168.1.10 rocky-9
-
-# List/remove generated iPXE client files
-./cli.py ipxe list-clients
-sudo ./cli.py ipxe delete-client 192.168.1.10
-```
-
-## 🔧 Configuration
-
-Edit `config.py` to customize paths and settings:
-
-```python
-@dataclass
-class DHCPConfig:
-    # DHCP Configuration
-    DHCP_CONF: Path = Path("/etc/dhcp/dhcpd.conf")
-    DHCP_BACKUP: Path = Path("/etc/dhcp/dhcpd.conf.bak")
-    
-    # PXE Boot Configuration
-    TFTP_BASE_DIR: Path = Path("/var/lib/tftpboot/pxelinux.cfg")
-    
-    # Flask Configuration
-    FLASK_HOST: str = "0.0.0.0"
-    FLASK_PORT: int = 5000
-    FLASK_DEBUG: bool = False  # Set False in production!
-```
-
-## 🧪 Testing
-
-```bash
-# Run all tests
-python3 -m unittest tests/test_dhcp_manager.py
-
-# Run with verbose output
-python3 tests/test_dhcp_manager.py
-```
-
-## 🔒 Security Considerations
-
-1. **Change the Flask secret key** in production:
-   ```python
-   # config.py
-   FLASK_SECRET_KEY: str = "your-secure-random-key-here"
-   ```
-
-2. **Disable debug mode** in production:
-   ```python
-   FLASK_DEBUG: bool = False
-   ```
-
-3. **Use HTTPS** with a reverse proxy (nginx/Apache)
-
-4. **Restrict access** with firewall rules or authentication
-
-5. **Run with appropriate permissions** - requires root for DHCP operations
-
-## 📝 API Documentation
-
-### DHCPManager
-
-```python
-from managers.dhcp_manager import DHCPManager
-
-mgr = DHCPManager()
-
-# Add entry
-mgr.add_entry("server1", "aa:bb:cc:dd:ee:ff", "192.168.1.10")
-
-# Get all entries
-entries = mgr.get_all_entries()
-
-# Find specific entry
-entry = mgr.find_entry("192.168.1.10")
-
-# Modify entry
-mgr.modify_entry("server1", new_ip="192.168.1.20")
-
-# Remove entry
-mgr.remove_entry("server1")
-```
-
-### PXEBootManager
-
-```python
-from managers.pxe_manager import PXEBootManager
-
-pxe = PXEBootManager()
-
-# Set boot device
-pxe.create_boot_link("192.168.1.10", "hd0")
-
-# Get boot device
-device = pxe.get_boot_device("192.168.1.10")
-
-# Convert IP to hex
-hex_name = PXEBootManager.ip_to_hex("192.168.1.10")  # "C0A8010A"
-
-# Convert hex to IP
-ip = PXEBootManager.hex_to_ip("C0A8010A")  # "192.168.1.10"
-
-# Delete boot link
-pxe.delete_boot_link("192.168.1.10")
-```
-
-## 🐛 Troubleshooting
-
-### DHCP Service Won't Start
 
 Check logs:
+
 ```bash
-tail -f /var/log/dhcp_manager.log
-journalctl -u isc-dhcp-server -f
+sudo journalctl -u isc-dhcp-server -f
+journalctl -u dhcp-manager-available-ips.service -n 50
 ```
 
-Validate configuration manually:
+Back up DHCP configuration before major changes:
+
 ```bash
-dhcpd -t -cf /etc/dhcp/dhcpd.conf
+sudo cp /etc/dhcp/dhcpd.conf /etc/dhcp/dhcpd.conf.backup
 ```
 
-### Permission Errors
+## Repository
 
-Ensure the script runs with appropriate permissions:
-```bash
-sudo ./cli.py list
-```
+https://github.com/zohdi/dhcp_pxe_web_manager
 
-Or use sudo for web interface:
-```bash
-sudo python3 web.py
-```
-
-### PXE Boot Not Working
-
-Check TFTP directory permissions:
-```bash
-ls -la /var/lib/tftpboot/pxelinux.cfg/
-```
-
-Verify symlinks:
-```bash
-cd /var/lib/tftpboot/pxelinux.cfg/
-ls -l | grep -E '^l'
-```
-
-## 📚 Development
-
-### Adding New Features
-
-1. **Add validation** in `utils/validators.py`
-2. **Add exceptions** in `exceptions.py` if needed
-3. **Implement logic** in appropriate manager class
-4. **Add tests** in `tests/`
-5. **Update CLI/Web** interfaces
-
-### Code Style
-
-- Follow PEP 8
-- Use type hints
-- Document with docstrings
-- Keep functions focused (Single Responsibility)
-- Handle errors explicitly
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
-
-## 📄 License
-
-[Your License Here]
-
-## 👥 Authors
-
-- Original: [Original Author]
-- Refactored: [Your Name]
-
-## 🙏 Acknowledgments
-
-- ISC DHCP Server project
-- Flask framework
-- Python community
-
----
-
-## Migration Guide (From Old Version)
-
-### What Changed
-
-1. **File Structure**
-   - `dhcp_manager.py` → Split into `managers/dhcp_manager.py` and `managers/pxe_manager.py`
-   - `colors.py` → Moved to `utils/colors.py`
-   - `logger.py` → Moved to `utils/logger.py`
-   - Added: `config.py`, `exceptions.py`, `utils/validators.py`
-
-2. **Imports**
-   ```python
-   # Old
-   from dhcp_manager import DHCPManager
-   from colors import green, red
-   
-   # New
-   from managers.dhcp_manager import DHCPManager
-   from utils.colors import green, red
-   ```
-
-3. **External Scripts**
-   - `convert.sh` functionality → `PXEBootManager.ip_to_hex()` / `hex_to_ip()`
-   - `manage_links_from_ip.py` → `PXEBootManager.create_boot_link()` / `delete_boot_link()`
-
-### Migration Steps
-
-1. **Backup your data**
-   ```bash
-   sudo cp /etc/dhcp/dhcpd.conf /etc/dhcp/dhcpd.conf.backup
-   ```
-
-2. **Update imports** in any custom scripts
-
-3. **Replace external script calls** with new Python methods
-
-4. **Test thoroughly** in a development environment first
-
-5. **Update systemd services** if applicable
-
----
-
-**For questions or issues, please open a GitHub issue or contact the maintainers.**
+Original project by Zohdi Mahameed.
