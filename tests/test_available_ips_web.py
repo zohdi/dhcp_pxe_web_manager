@@ -72,6 +72,8 @@ def test_periodic_refresh_and_dhcp_config_watcher_are_bundled():
     assert "RandomizedDelaySec=1m" in installer
     assert "dhcp-manager-available-ips.path" in installer
     assert "PathChanged=" in installer
+    assert "PathModified=" in installer
+    assert "TimeoutStartSec=15min" in installer
     apply_script = source("apply_to_main.sh")
     assert "availability_scanner.py" in apply_script
     assert "refresh_available_ips.py" in apply_script
@@ -116,3 +118,23 @@ def test_web_crud_stages_config_and_restart_requests_full_rescan():
     restart = re.search(r'@app\.route\("/restart", methods=\["POST"\]\)(?P<body>.*?)(?=\n@app\.route\(|\Z)', web, re.S)
     assert restart
     assert "_trigger_available_ip_refresh" in restart.group("body")
+
+def test_web_refresh_trigger_runs_script_directly_and_logs_output():
+    web = source("web.py")
+    assert "systemctl" not in web.split("def _trigger_available_ip_refresh", 1)[1].split("# AUTHORIZATION DECORATORS", 1)[0]
+    assert "[sys.executable, str(script), \"--reason\", reason]" in web
+    assert "available_ips_refresh.log" in web
+
+
+def test_staged_crud_requests_cache_reconciliation():
+    web = source("web.py")
+    assert "DHCP reservation added:" in web
+    assert "DHCP reservation edited:" in web
+    assert "DHCP reservation deleted:" in web
+
+
+def test_refresh_script_serializes_overlapping_scans():
+    refresh = source("refresh_available_ips.py")
+    assert "fcntl.flock" in refresh
+    assert "LOCK_EX" in refresh
+    assert "available_ips_refresh.lock" in refresh

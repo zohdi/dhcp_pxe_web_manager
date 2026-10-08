@@ -34,7 +34,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=$TARGET_DIR
-ExecStart=$PYTHON_BIN $TARGET_DIR/refresh_available_ips.py
+ExecStart=$PYTHON_BIN $TARGET_DIR/refresh_available_ips.py --reason systemd
+TimeoutStartSec=15min
 EOF
 
 cat > "/etc/systemd/system/$TIMER_NAME" <<EOF
@@ -58,6 +59,7 @@ Description=Refresh DHCP Manager available IP cache when dhcpd.conf changes
 
 [Path]
 PathChanged=$DHCP_CONF_PATH
+PathModified=$DHCP_CONF_PATH
 Unit=$SERVICE_NAME
 
 [Install]

@@ -232,46 +232,55 @@ def _available_ip_payload_for_identity(ident):
 
 
 def _trigger_available_ip_refresh(reason: str) -> tuple[bool, str]:
-    """Request a full managed-VLAN refresh without blocking the web request."""
-    command = ["systemctl", "--no-block", "start", AVAILABLE_IP_REFRESH_SERVICE]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if result.returncode == 0:
-            logger.info(f"Available-IP refresh requested via systemd: {reason}")
-            return True, "full available-IP scan requested"
-        systemd_error = (result.stderr or result.stdout or "unknown systemctl error").strip()
-        logger.warning(
-            f"Could not start {AVAILABLE_IP_REFRESH_SERVICE} via systemd: {systemd_error}"
-        )
-    except Exception as exc:
-        systemd_error = str(exc)
-        logger.warning(f"systemd available-IP refresh trigger failed: {exc}")
+    """Launch the refresh script directly in the background.
 
-    # Backward-compatible fallback for hosts that have not yet re-run the
-    # timer/path installer after upgrading.
+    Using systemctl --no-block here was unreliable because a queued service start
+    can return success even when the oneshot later fails or produces no cache.
+    The systemd timer/path units still use the same script as independent
+    fallbacks; web-triggered refreshes use the current Python interpreter.
+    """
     script = Path(__file__).resolve().parent / "refresh_available_ips.py"
+    log_path = script.parent / "data" / "available_ips_refresh.log"
     try:
-        subprocess.Popen(
-            [sys.executable, str(script)],
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("ab", buffering=0)
+    except OSError as exc:
+        logger.warning(f"Could not open Available-IP refresh log {log_path}: {exc}")
+        log_handle = subprocess.DEVNULL
+
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(script), "--reason", reason],
             cwd=str(script.parent),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
+            close_fds=True,
         )
+        # Catch immediate startup failures while keeping normal scans asynchronous.
+        time.sleep(0.10)
+        return_code = process.poll()
+        if return_code not in (None, 0):
+            message = (
+                f"refresh process exited immediately with code {return_code}; "
+                f"see {log_path}"
+            )
+            logger.error(message)
+            return False, message
         logger.info(
-            f"Available-IP refresh requested with background script fallback: {reason}"
+            f"Available-IP refresh process started pid={process.pid}: {reason}"
         )
-        return True, "full available-IP scan requested (background fallback)"
+        return True, f"background scan started (pid={process.pid})"
     except Exception as exc:
-        message = f"systemd={systemd_error}; fallback={exc}"
-        logger.error(f"Unable to trigger available-IP refresh: {message}")
+        message = f"Unable to start background Available-IP refresh: {exc}"
+        logger.error(message)
         return False, message
+    finally:
+        if log_handle not in (subprocess.DEVNULL, None):
+            try:
+                log_handle.close()
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -584,7 +593,16 @@ def add_entry():
                     available_ip_scanner.remove_cached_ip(ip)
                 except Exception as exc:
                     logger.warning(f"Could not remove {ip} from availability cache: {exc}")
-                _audit("DHCP_ADD", hostname, ip, "SUCCESS")
+                refresh_started, refresh_details = _trigger_available_ip_refresh(
+                    f"DHCP reservation added: {hostname} {ip}"
+                )
+                _audit(
+                    "DHCP_ADD",
+                    hostname,
+                    ip,
+                    "SUCCESS",
+                    f"available_ip_refresh={refresh_started}; {refresh_details}",
+                )
                 flash(f"✅ Entry saved: {hostname}. Restart DHCP when you are ready to apply staged changes.", "success")
                 return redirect(url_for("index"))
             _audit("DHCP_ADD", hostname, ip, "FAILED", str(result))
@@ -661,12 +679,19 @@ def edit_entry(identifier: str):
                     available_ip_scanner.remove_cached_ip(target_ip)
                 except Exception as exc:
                     logger.warning(f"Could not remove {target_ip} from availability cache: {exc}")
+            refresh_started, refresh_details = _trigger_available_ip_refresh(
+                f"DHCP reservation edited: {identifier} {original_ip} -> {target_ip}"
+            )
             _audit(
                 "DHCP_EDIT",
                 identifier,
                 target_ip,
                 "SUCCESS",
-                f"old_ip={original_ip}; new_hostname={new_hostname or entry.get('hostname')}; new_mac={new_mac or entry.get('mac')}",
+                (
+                    f"old_ip={original_ip}; new_hostname={new_hostname or entry.get('hostname')}; "
+                    f"new_mac={new_mac or entry.get('mac')}; "
+                    f"available_ip_refresh={refresh_started}; {refresh_details}"
+                ),
             )
             flash("✅ Entry updated in dhcpd.conf. Restart DHCP when you are ready to apply staged changes.", "success")
             return redirect(url_for("index"))
@@ -697,7 +722,16 @@ def delete_entry(identifier: str):
 
     success, result = safe_execute(dhcp_mgr.remove_entry, identifier, apply_immediately=False)
     if success:
-        _audit("DHCP_DELETE", identifier, entry["ip"], "SUCCESS")
+        refresh_started, refresh_details = _trigger_available_ip_refresh(
+            f"DHCP reservation deleted: {identifier} {entry['ip']}"
+        )
+        _audit(
+            "DHCP_DELETE",
+            identifier,
+            entry["ip"],
+            "SUCCESS",
+            f"available_ip_refresh={refresh_started}; {refresh_details}",
+        )
         flash(f"🗑️ Entry removed from dhcpd.conf: {identifier}. Restart DHCP when you are ready to apply staged changes.", "success")
     else:
         _audit("DHCP_DELETE", identifier, entry["ip"], "FAILED", str(result))
@@ -834,19 +868,7 @@ def ipxe_dhcp_snippet():
 @app.route("/restart", methods=["POST"])
 @require_editor_or_manager
 def restart_dhcp_service():
-    valid, validation_result = safe_execute(dhcp_mgr.validate_syntax)
-    if not valid:
-        _audit(
-            "DHCP_RESTART",
-            config.DHCP_SERVICE,
-            None,
-            "FAILED",
-            f"syntax validation failed: {validation_result}",
-        )
-        flash(f"❌ DHCP configuration is invalid; service was not restarted: {validation_result}", "danger")
-        return redirect(url_for("index"))
-
-    success, result = safe_execute(dhcp_mgr.restart_service, config.DHCP_SERVICE)
+    success, result = safe_execute(dhcp_mgr.apply_changes)
     if success:
         refresh_started, refresh_details = _trigger_available_ip_refresh(
             "successful DHCP service restart"
@@ -860,14 +882,16 @@ def restart_dhcp_service():
         )
         flash("🔄 DHCP service restarted successfully", "success")
         if refresh_started:
-            flash("🔎 Available IP full scan requested after DHCP restart.", "info")
+            flash("🔎 Available IP full scan started after DHCP restart.", "info")
         else:
-            flash(f"⚠️ DHCP restarted, but Available IP refresh could not be started: {refresh_details}", "warning")
+            flash(
+                f"⚠️ DHCP restarted, but Available IP refresh could not be started: {refresh_details}",
+                "warning",
+            )
     else:
         _audit("DHCP_RESTART", config.DHCP_SERVICE, None, "FAILED", str(result))
-        flash(f"❌ Failed to restart DHCP service: {result}", "danger")
+        flash(f"❌ Failed to apply DHCP changes/restart service: {result}", "danger")
     return redirect(url_for("index"))
-
 
 # ============================================================
 # MANAGER-OWNED ACCESS CONTROL
@@ -1019,6 +1043,11 @@ def access_control_delete_principal(alias: str):
 # ERROR HANDLERS
 # ============================================================
 
+@app.route("/favicon.ico")
+def favicon():
+    return ("", 204)
+
+
 @app.errorhandler(403)
 def forbidden_error(error):
     ident = current_identity()
@@ -1031,8 +1060,11 @@ def forbidden_error(error):
 
 @app.errorhandler(404)
 def not_found_error(error):
-    flash("⚠️ Page not found", "warning")
-    return redirect(url_for("index"))
+    # Do not flash into the session: browsers/devtools may probe optional paths
+    # such as favicon or .well-known URLs and create misleading banners later.
+    if request.headers.get("X-Requested-With") == "fetch" or request.accept_mimetypes.best == "application/json":
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    return Response("Page not found\n", mimetype="text/plain", status=404)
 
 
 @app.errorhandler(500)
