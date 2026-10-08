@@ -157,3 +157,9 @@ def test_dhcp_restart_allows_vlan_editor_or_manager():
     assert restart_lines
     assert any("can_edit_entries" in line for line in restart_lines)
     assert any("Manager or VLAN Editor only" in line for line in restart_lines)
+
+def test_404_does_not_flash_phantom_page_not_found():
+    web = source("web.py")
+    block = web.split("@app.errorhandler(404)", 1)[1].split("@app.errorhandler(500)", 1)[0]
+    assert 'flash("⚠️ Page not found"' not in block
+    assert '@app.route("/favicon.ico")' in web
