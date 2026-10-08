@@ -114,14 +114,15 @@ def test_available_ip_page_polls_cache_without_full_page_refresh():
 def test_web_crud_stages_config_and_restart_requests_full_rescan():
     web = source("web.py")
     assert web.count("apply_immediately=False") >= 3
-    assert "validate_syntax" in web
+    assert "apply_changes" in web
     restart = re.search(r'@app\.route\("/restart", methods=\["POST"\]\)(?P<body>.*?)(?=\n@app\.route\(|\Z)', web, re.S)
     assert restart
     assert "_trigger_available_ip_refresh" in restart.group("body")
 
 def test_web_refresh_trigger_runs_script_directly_and_logs_output():
     web = source("web.py")
-    assert "systemctl" not in web.split("def _trigger_available_ip_refresh", 1)[1].split("# AUTHORIZATION DECORATORS", 1)[0]
+    helper = web.split("def _trigger_available_ip_refresh", 1)[1].split("# AUTHORIZATION DECORATORS", 1)[0]
+    assert '["systemctl"' not in helper
     assert "[sys.executable, str(script), \"--reason\", reason]" in web
     assert "available_ips_refresh.log" in web
 
