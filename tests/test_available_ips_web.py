@@ -18,18 +18,23 @@ def test_config_has_available_ip_paths_and_scan_defaults():
     assert "AVAILABLE_IP_PING_WORKERS" in text
 
 
-def test_web_has_scoped_available_ip_page_and_manager_refresh():
+def test_web_has_scoped_live_available_ip_page_and_editor_refresh():
     web = source("web.py")
     view = re.search(r'@app\.route\("/available-ips"\)(?P<body>.*?)(?=\n@app\.route\(|\Z)', web, re.S)
     assert view
     assert "@require_editor_or_manager" in view.group("body")
-    assert "filter_available_cache" in view.group("body")
-    assert "_available_ip_visible_to_identity" in view.group("body")
+    assert "_available_ip_payload_for_identity" in view.group("body")
+
+    data = re.search(r'@app\.route\("/available-ips/data"\)(?P<body>.*?)(?=\n@app\.route\(|\Z)', web, re.S)
+    assert data
+    assert "@require_editor_or_manager" in data.group("body")
+    assert "jsonify" in data.group("body")
 
     refresh = re.search(r'@app\.route\("/available-ips/refresh", methods=\["POST"\]\)(?P<body>.*?)(?=\n@app\.route\(|\Z)', web, re.S)
     assert refresh
-    assert "@require_manager" in refresh.group("body")
-    assert "scan_and_cache" in refresh.group("body")
+    assert "@require_editor_or_manager" in refresh.group("body")
+    assert "_trigger_available_ip_refresh" in refresh.group("body")
+    assert "all_managed_subnets" in refresh.group("body")
 
 
 def test_add_and_edit_use_cached_options_and_live_revalidation():
@@ -60,11 +65,13 @@ def test_available_ip_page_uses_subnet_cidr_not_vlan_id():
     assert "generated_at" in text
 
 
-def test_daily_refresh_script_and_optional_systemd_installer_are_bundled():
+def test_periodic_refresh_and_dhcp_config_watcher_are_bundled():
     assert (ROOT / "refresh_available_ips.py").exists()
     installer = source("install_available_ip_timer.sh")
-    assert "OnCalendar=daily" in installer
-    assert "Persistent=true" in installer
+    assert "OnUnitActiveSec=15m" in installer
+    assert "RandomizedDelaySec=1m" in installer
+    assert "dhcp-manager-available-ips.path" in installer
+    assert "PathChanged=" in installer
     apply_script = source("apply_to_main.sh")
     assert "availability_scanner.py" in apply_script
     assert "refresh_available_ips.py" in apply_script
@@ -83,7 +90,7 @@ def test_scans_are_scoped_to_enabled_acl_vlan_mappings():
     scanner = source("availability_scanner.py")
 
     assert "def _managed_vlan_cidrs" in web
-    assert "scan_and_cache(managed_cidrs=_managed_vlan_cidrs())" in web
+    assert "_trigger_available_ip_refresh" in web
     assert "acl_store.vlan_for_ip(ip) is not None" in web
 
     assert "ACLStore" in refresh
@@ -92,3 +99,20 @@ def test_scans_are_scoped_to_enabled_acl_vlan_mappings():
 
     assert "managed_cidrs" in scanner
     assert "skipped_unmanaged_subnets" in scanner
+
+def test_available_ip_page_polls_cache_without_full_page_refresh():
+    template = source("templates/available_ips.html")
+    assert "available_ips_data" in template
+    assert "fetchAvailableIps" in template
+    assert "window.setInterval(fetchAvailableIps, 5000)" in template
+    assert "X-Requested-With" in template
+    assert "Live cache sync" in template
+
+
+def test_web_crud_stages_config_and_restart_requests_full_rescan():
+    web = source("web.py")
+    assert web.count("apply_immediately=False") >= 3
+    assert "validate_syntax" in web
+    restart = re.search(r'@app\.route\("/restart", methods=\["POST"\]\)(?P<body>.*?)(?=\n@app\.route\(|\Z)', web, re.S)
+    assert restart
+    assert "_trigger_available_ip_refresh" in restart.group("body")

@@ -169,6 +169,12 @@ export DHCP_MANAGER_SECRET_KEY='use-a-long-random-secret'
 
 The bundled `static/vendor/rsa_oaep_sha256.js` performs RSA-OAEP/SHA-256 without `crypto.subtle`, so the AD form can encrypt its submitted password envelope on ordinary HTTP. V1.3.4 replaces the previous session nonce with a signed 120-second challenge, fixing false `Invalid or expired login challenge` errors caused by another render/refresh overwriting the session nonce. This specifically keeps plaintext out of Network → Payload. It is not a replacement for TLS: on HTTP an active network attacker can replace the delivered JavaScript/public key and capture credentials before encryption. A captured encrypted login payload can also be replayed during its short validity window; the signed challenge provides freshness, not strict one-time replay prevention.
 
+## Staged reservation workflow
+
+Web Add/Edit/Delete operations are staged: the application writes and syntax-validates `dhcpd.conf` but does not restart DHCP for every reservation. Operators can prepare several changes and then use **Restart DHCP Service** once. CLI calls keep their existing immediate-apply default.
+
+The cache watcher sees the file changes immediately, so newly reserved IPs disappear from the Available IP list before the DHCP restart. Deleted or replaced reservation IPs are only shown again after a full scan confirms they still meet the availability checks.
+
 ## Available reservation IP discovery (V1.4.1)
 
 The web UI now has **Show Available IPs** for Manager/VLAN Editor sessions and an IP selector on Add/Edit reservation pages. Results are grouped by the actual DHCP subnet CIDR (for example `172.28.103.0/24`), not by an assumed VLAN ID.
@@ -193,12 +199,12 @@ Create the first cache manually:
 sudo python3 refresh_available_ips.py
 ```
 
-A Manager can also use **Refresh Scan** in the Available IPs page. VLAN Editors can view only addresses inside their assigned ACL CIDRs; only Managers can initiate a whole-server scan from the GUI.
+Managers and VLAN Editors can use **Refresh Scan** in the Available IPs page. The button requests the same full managed-VLAN scan; VLAN Editors still see only addresses inside their assigned ACL CIDRs.
 
-For an automatic daily refresh, an optional systemd timer installer is included:
+For periodic and event-driven refresh, a systemd installer is included:
 
 ```bash
 sudo ./install_available_ip_timer.sh "$PWD"
 ```
 
-The timer uses `OnCalendar=daily`, is persistent across downtime, and adds a small randomized delay. The normal overlay installer does **not** enable network scanning automatically; installing the timer is an explicit administrator action.
+The installer creates a roughly 15-minute fallback timer plus a `dhcpd.conf` path watcher. Any configuration change requests the same full scan service. A successful DHCP restart from the web UI also requests a full scan. The Available IP page polls the cache every 5 seconds and redraws automatically, while ACL filtering still limits what each VLAN Editor can see.

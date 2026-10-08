@@ -346,6 +346,23 @@ class DHCPManager:
         except ServiceError as e:
             print(yellow(f"⚠ DNS reload failed (non-critical): {e}"))
     
+    def validate_staged_changes(self) -> None:
+        """Validate a newly written DHCP configuration without restarting services.
+
+        Used by the web UI so multiple reservation changes can be staged safely
+        before the operator performs one explicit DHCP restart.
+        """
+        print(blue("🔍 Validating staged DHCP configuration syntax..."))
+        try:
+            self.validate_syntax()
+            print(green("✓ Staged DHCP syntax validation passed"))
+            self.logger.info("DHCP configuration validated; service restart deferred")
+        except SyntaxValidationError as e:
+            print(red(f"✗ Staged DHCP syntax validation failed: {e}"))
+            print(yellow("⏪ Restoring from backup..."))
+            self.restore_backup()
+            raise
+
     # ============================================================
     #                   CRUD OPERATIONS
     # ============================================================
@@ -382,7 +399,13 @@ class DHCPManager:
         
         return None
     
-    def add_entry(self, hostname: str, mac: str, ip: str) -> None:
+    def add_entry(
+        self,
+        hostname: str,
+        mac: str,
+        ip: str,
+        apply_immediately: bool = True,
+    ) -> None:
         """
         Add a new DHCP entry.
         
@@ -420,13 +443,16 @@ class DHCPManager:
         print(blue("✏️ Adding entry..."))
         self._write_file(content + new_entry)
         
-        # Apply changes
-        self.apply_changes()
+        # Validate now; restart immediately only for callers that request legacy behavior.
+        if apply_immediately:
+            self.apply_changes()
+        else:
+            self.validate_staged_changes()
         
         self.logger.info(f"Added DHCP entry: {hostname} ({mac} -> {ip})")
         print(green(f"✓ Successfully added: {hostname}"))
     
-    def remove_entry(self, identifier: str) -> None:
+    def remove_entry(self, identifier: str, apply_immediately: bool = True) -> None:
         """
         Remove a DHCP entry by IP, MAC, or hostname.
         
@@ -462,8 +488,11 @@ class DHCPManager:
         print(blue("🗑️ Removing entry..."))
         self._write_file(new_content)
         
-        # Apply changes
-        self.apply_changes()
+        # Validate now; restart immediately only for callers that request legacy behavior.
+        if apply_immediately:
+            self.apply_changes()
+        else:
+            self.validate_staged_changes()
 
         try:
             pxe_manager = PXEBootManager()
@@ -480,7 +509,8 @@ class DHCPManager:
         identifier: str,
         new_hostname: Optional[str] = None,
         new_mac: Optional[str] = None,
-        new_ip: Optional[str] = None
+        new_ip: Optional[str] = None,
+        apply_immediately: bool = True,
     ) -> None:
         """
         Modify an existing DHCP entry.
@@ -559,8 +589,11 @@ class DHCPManager:
         print(blue("✏️ Updating entry..."))
         self._write_file(content + new_entry)
         
-        # Apply changes
-        self.apply_changes()
+        # Validate now; restart immediately only for callers that request legacy behavior.
+        if apply_immediately:
+            self.apply_changes()
+        else:
+            self.validate_staged_changes()
         
         self.logger.info(
             f"Modified DHCP entry: {old_entry['hostname']} -> {updated['hostname']}"

@@ -60,3 +60,21 @@ def test_remove_entry_deletes_host_block(tmp_path: Path):
 def test_find_missing_entry_returns_none(tmp_path: Path):
     mgr = manager_for(tmp_path)
     assert mgr.find_entry("missing") is None
+
+def test_add_entry_can_stage_without_restart(tmp_path: Path):
+    mgr = manager_for(tmp_path)
+    calls = {"apply": 0, "validate_staged": 0}
+    mgr.apply_changes = lambda: calls.__setitem__("apply", calls["apply"] + 1)
+    mgr.validate_staged_changes = lambda: calls.__setitem__(
+        "validate_staged", calls["validate_staged"] + 1
+    )
+
+    mgr.add_entry(
+        "server2",
+        "00:11:22:33:44:55",
+        "192.168.1.20",
+        apply_immediately=False,
+    )
+
+    assert calls == {"apply": 0, "validate_staged": 1}
+    assert mgr.find_entry("server2") is not None

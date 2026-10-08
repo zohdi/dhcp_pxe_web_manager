@@ -9,6 +9,9 @@ Authentication paths:
 """
 import traceback
 import time
+import subprocess
+import sys
+from pathlib import Path
 from typing import Tuple, Any
 from functools import wraps
 
@@ -55,6 +58,7 @@ authz = AuthorizationService(acl_store)
 ad_authenticator = ADAuthenticator(config.AD_PAM_SERVICE)
 available_ip_scanner = AvailableIPScanner.from_config(config)
 AD_LOGIN_CHALLENGE_MAX_AGE = 120
+AVAILABLE_IP_REFRESH_SERVICE = "dhcp-manager-available-ips.service"
 
 
 # ============================================================
@@ -195,6 +199,79 @@ def _available_ip_groups_for_identity(ident):
     except ScanError as exc:
         logger.error(f"Unable to read available-IP cache: {exc}")
         return []
+
+
+def _available_ip_payload_for_identity(ident):
+    """Return live cache metadata and ACL-filtered subnet results for the UI."""
+    try:
+        cache = available_ip_scanner.read_cache()
+        visible_cache = filter_available_cache(
+            cache,
+            lambda ip: _available_ip_visible_to_identity(ident, ip),
+        )
+        return {
+            "ok": True,
+            "generated_at": visible_cache.get("generated_at"),
+            "generated_at_epoch": visible_cache.get("generated_at_epoch"),
+            "stale": available_ip_scanner.is_cache_stale(cache),
+            "error": None,
+            "available_count_visible": visible_cache.get("available_count_visible", 0),
+            "subnets": visible_cache.get("subnets", []),
+        }
+    except ScanError as exc:
+        logger.error(f"Unable to load available-IP cache: {exc}")
+        return {
+            "ok": False,
+            "generated_at": None,
+            "generated_at_epoch": None,
+            "stale": True,
+            "error": str(exc),
+            "available_count_visible": 0,
+            "subnets": [],
+        }
+
+
+def _trigger_available_ip_refresh(reason: str) -> tuple[bool, str]:
+    """Request a full managed-VLAN refresh without blocking the web request."""
+    command = ["systemctl", "--no-block", "start", AVAILABLE_IP_REFRESH_SERVICE]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            logger.info(f"Available-IP refresh requested via systemd: {reason}")
+            return True, "full available-IP scan requested"
+        systemd_error = (result.stderr or result.stdout or "unknown systemctl error").strip()
+        logger.warning(
+            f"Could not start {AVAILABLE_IP_REFRESH_SERVICE} via systemd: {systemd_error}"
+        )
+    except Exception as exc:
+        systemd_error = str(exc)
+        logger.warning(f"systemd available-IP refresh trigger failed: {exc}")
+
+    # Backward-compatible fallback for hosts that have not yet re-run the
+    # timer/path installer after upgrading.
+    script = Path(__file__).resolve().parent / "refresh_available_ips.py"
+    try:
+        subprocess.Popen(
+            [sys.executable, str(script)],
+            cwd=str(script.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info(
+            f"Available-IP refresh requested with background script fallback: {reason}"
+        )
+        return True, "full available-IP scan requested (background fallback)"
+    except Exception as exc:
+        message = f"systemd={systemd_error}; fallback={exc}"
+        logger.error(f"Unable to trigger available-IP refresh: {message}")
+        return False, message
 
 
 # ============================================================
@@ -426,56 +503,59 @@ def index():
 @require_editor_or_manager
 def available_ips():
     ident = current_identity()
-    try:
-        cache = available_ip_scanner.read_cache()
-        visible_cache = filter_available_cache(
-            cache,
-            lambda ip: _available_ip_visible_to_identity(ident, ip),
-        )
-        stale = available_ip_scanner.is_cache_stale(cache)
-        cache_error = None
-    except ScanError as exc:
-        logger.error(f"Unable to load available-IP cache: {exc}")
-        visible_cache = {"generated_at": None, "subnets": [], "available_count_visible": 0}
-        stale = True
-        cache_error = str(exc)
-
+    payload = _available_ip_payload_for_identity(ident)
     return render_template(
         "available_ips.html",
-        cache=visible_cache,
-        subnets=visible_cache.get("subnets", []),
-        generated_at=visible_cache.get("generated_at"),
-        stale=stale,
-        cache_error=cache_error,
+        cache=payload,
+        subnets=payload.get("subnets", []),
+        generated_at=payload.get("generated_at"),
+        stale=payload.get("stale", True),
+        cache_error=payload.get("error"),
         role=ident.role,
         username=ident.username,
         auth_source=ident.auth_source,
-        can_manage_global=authz.can_manage_global(ident),
     )
 
 
+@app.route("/available-ips/data")
+@require_editor_or_manager
+def available_ips_data():
+    ident = current_identity()
+    return jsonify(_available_ip_payload_for_identity(ident))
+
+
 @app.route("/available-ips/refresh", methods=["POST"])
-@require_manager
+@require_editor_or_manager
 def available_ips_refresh():
-    try:
-        result = available_ip_scanner.scan_and_cache(managed_cidrs=_managed_vlan_cidrs())
+    ident = current_identity()
+    started, details = _trigger_available_ip_refresh(
+        f"manual refresh by {ident.username} ({ident.role})"
+    )
+    if started:
         _audit(
-            "AVAILABLE_IP_SCAN",
-            "managed_subnets",
+            "AVAILABLE_IP_SCAN_REQUEST",
+            "all_managed_subnets",
             None,
             "SUCCESS",
-            f"subnets={len(result.get('subnets', []))}; available={result.get('available_count', 0)}",
+            f"requested_by_role={ident.role}; {details}",
         )
-        flash(
-            f"✅ Available IP scan completed: {result.get('available_count', 0)} candidates found.",
-            "success",
+        message = "✅ Full Available IP scan requested. This page will update automatically when it finishes."
+        if request.headers.get("X-Requested-With") == "fetch":
+            return jsonify({"ok": True, "message": message}), 202
+        flash(message, "success")
+    else:
+        _audit(
+            "AVAILABLE_IP_SCAN_REQUEST",
+            "all_managed_subnets",
+            None,
+            "FAILED",
+            details,
         )
-    except Exception as exc:
-        logger.error(f"Available IP scan failed: {exc}")
-        _audit("AVAILABLE_IP_SCAN", "managed_subnets", None, "FAILED", str(exc))
-        flash(f"❌ Available IP scan failed: {exc}", "danger")
+        message = f"❌ Unable to start Available IP scan: {details}"
+        if request.headers.get("X-Requested-With") == "fetch":
+            return jsonify({"ok": False, "message": message}), 503
+        flash(message, "danger")
     return redirect(url_for("available_ips"))
-
 
 @app.route("/add", methods=["GET", "POST"])
 @require_editor_or_manager
@@ -498,14 +578,14 @@ def add_entry():
             _audit("DHCP_ADD", hostname, ip, "FAILED", reason)
             flash(f"❌ IP {ip} is not currently available: {reason}", "danger")
         else:
-            success, result = safe_execute(dhcp_mgr.add_entry, hostname, mac, ip)
+            success, result = safe_execute(dhcp_mgr.add_entry, hostname, mac, ip, apply_immediately=False)
             if success:
                 try:
                     available_ip_scanner.remove_cached_ip(ip)
                 except Exception as exc:
                     logger.warning(f"Could not remove {ip} from availability cache: {exc}")
                 _audit("DHCP_ADD", hostname, ip, "SUCCESS")
-                flash(f"✅ Successfully added entry: {hostname}", "success")
+                flash(f"✅ Entry saved: {hostname}. Restart DHCP when you are ready to apply staged changes.", "success")
                 return redirect(url_for("index"))
             _audit("DHCP_ADD", hostname, ip, "FAILED", str(result))
             flash(f"❌ Failed to add entry: {result}", "danger")
@@ -573,6 +653,7 @@ def edit_entry(identifier: str):
             new_hostname=new_hostname,
             new_mac=new_mac,
             new_ip=new_ip,
+            apply_immediately=False,
         )
         if success:
             if target_ip != original_ip:
@@ -587,7 +668,7 @@ def edit_entry(identifier: str):
                 "SUCCESS",
                 f"old_ip={original_ip}; new_hostname={new_hostname or entry.get('hostname')}; new_mac={new_mac or entry.get('mac')}",
             )
-            flash("✅ Entry updated successfully", "success")
+            flash("✅ Entry updated in dhcpd.conf. Restart DHCP when you are ready to apply staged changes.", "success")
             return redirect(url_for("index"))
         _audit("DHCP_EDIT", identifier, target_ip, "FAILED", str(result))
         flash(f"❌ Failed to update entry: {result}", "danger")
@@ -614,10 +695,10 @@ def delete_entry(identifier: str):
         return redirect(url_for("index"))
     _enforce_edit_ip(entry["ip"], "DHCP_DELETE")
 
-    success, result = safe_execute(dhcp_mgr.remove_entry, identifier)
+    success, result = safe_execute(dhcp_mgr.remove_entry, identifier, apply_immediately=False)
     if success:
         _audit("DHCP_DELETE", identifier, entry["ip"], "SUCCESS")
-        flash(f"🗑️ Successfully deleted entry: {identifier}", "success")
+        flash(f"🗑️ Entry removed from dhcpd.conf: {identifier}. Restart DHCP when you are ready to apply staged changes.", "success")
     else:
         _audit("DHCP_DELETE", identifier, entry["ip"], "FAILED", str(result))
         flash(f"❌ Failed to delete entry: {result}", "danger")
@@ -753,10 +834,35 @@ def ipxe_dhcp_snippet():
 @app.route("/restart", methods=["POST"])
 @require_editor_or_manager
 def restart_dhcp_service():
+    valid, validation_result = safe_execute(dhcp_mgr.validate_syntax)
+    if not valid:
+        _audit(
+            "DHCP_RESTART",
+            config.DHCP_SERVICE,
+            None,
+            "FAILED",
+            f"syntax validation failed: {validation_result}",
+        )
+        flash(f"❌ DHCP configuration is invalid; service was not restarted: {validation_result}", "danger")
+        return redirect(url_for("index"))
+
     success, result = safe_execute(dhcp_mgr.restart_service, config.DHCP_SERVICE)
     if success:
-        _audit("DHCP_RESTART", config.DHCP_SERVICE, None, "SUCCESS")
+        refresh_started, refresh_details = _trigger_available_ip_refresh(
+            "successful DHCP service restart"
+        )
+        _audit(
+            "DHCP_RESTART",
+            config.DHCP_SERVICE,
+            None,
+            "SUCCESS",
+            f"available_ip_refresh={refresh_started}; {refresh_details}",
+        )
         flash("🔄 DHCP service restarted successfully", "success")
+        if refresh_started:
+            flash("🔎 Available IP full scan requested after DHCP restart.", "info")
+        else:
+            flash(f"⚠️ DHCP restarted, but Available IP refresh could not be started: {refresh_details}", "warning")
     else:
         _audit("DHCP_RESTART", config.DHCP_SERVICE, None, "FAILED", str(result))
         flash(f"❌ Failed to restart DHCP service: {result}", "danger")
