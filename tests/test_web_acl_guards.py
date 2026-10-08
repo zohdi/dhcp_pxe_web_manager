@@ -18,10 +18,10 @@ def test_web_integrates_ad_login_and_server_side_acl_checks():
     assert "_enforce_view_ip(ip" in text
 
 
-def test_global_operations_are_manager_only_except_dhcp_restart():
+def test_global_operations_are_manager_only_except_dhcp_restart_and_scan_refresh():
     text = source("web.py")
-    assert text.count("@require_editor_or_manager") >= 5
-    assert text.count("@require_manager") >= 5
+    assert text.count("@require_editor_or_manager") >= 7
+    assert text.count("@require_manager") >= 4
     assert '@app.route("/access-control")' in text
 
 
