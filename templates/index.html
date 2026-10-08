@@ -74,7 +74,7 @@
 
     <div class="col-lg-3 col-md-12">
       <div class="sidebar">
-        {% if can_manage_global %}<form method="POST" action="{{ url_for('restart_dhcp_service') }}"><button class="btn btn-primary w-100 btn-big mb-3">🔄 Restart DHCP Service</button></form>{% else %}<button class="btn btn-primary w-100 btn-big mb-3" disabled title="Manager only">🔄 Restart DHCP Service</button>{% endif %}
+        {% if can_edit_entries %}<form method="POST" action="{{ url_for('restart_dhcp_service') }}"><button class="btn btn-primary w-100 btn-big mb-3">🔄 Restart DHCP Service</button></form>{% else %}<button class="btn btn-primary w-100 btn-big mb-3" disabled title="Manager or VLAN Editor only">🔄 Restart DHCP Service</button>{% endif %}
         {% if can_edit_entries %}<a href="{{ url_for('available_ips') }}" class="btn btn-outline-success w-100 btn-big mb-3">🧭 Show Available IPs</a>{% endif %}
         {% if can_edit_entries %}<a href="{{ url_for('add_entry') }}" class="btn btn-success w-100 btn-big mb-3">➕ Add New Entry</a>{% else %}<button class="btn btn-success w-100 btn-big mb-3" disabled>➕ Add New Entry</button>{% endif %}
         {% if can_manage_global %}<a href="{{ url_for('access_control') }}" class="btn btn-dark w-100 btn-big mb-3">🔐 Access Control</a>{% endif %}

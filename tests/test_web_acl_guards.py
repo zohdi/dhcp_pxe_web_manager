@@ -18,10 +18,10 @@ def test_web_integrates_ad_login_and_server_side_acl_checks():
     assert "_enforce_view_ip(ip" in text
 
 
-def test_global_operations_are_manager_only_and_reservation_crud_allows_editor():
+def test_global_operations_are_manager_only_except_dhcp_restart():
     text = source("web.py")
-    assert text.count("@require_editor_or_manager") >= 4
-    assert text.count("@require_manager") >= 6
+    assert text.count("@require_editor_or_manager") >= 5
+    assert text.count("@require_manager") >= 5
     assert '@app.route("/access-control")' in text
 
 
@@ -147,3 +147,13 @@ def test_readme_describes_https_web_crypto_requirement():
     assert "HTTPS is required for the encrypted AD form" in readme
     assert "crypto.subtle" in readme
     assert "ordinary HTTP" not in readme
+
+def test_dhcp_restart_allows_vlan_editor_or_manager():
+    web = source("web.py")
+    assert '@app.route("/restart", methods=["POST"])\n@require_editor_or_manager\ndef restart_dhcp_service():' in web
+
+    template = source("templates/index.html")
+    restart_lines = [line for line in template.splitlines() if "restart_dhcp_service" in line]
+    assert restart_lines
+    assert any("can_edit_entries" in line for line in restart_lines)
+    assert any("Manager or VLAN Editor only" in line for line in restart_lines)

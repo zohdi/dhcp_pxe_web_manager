@@ -26,6 +26,7 @@ cd /opt/dhcp_manager
 - AD login through Linux PAM/VAS
 - Explicit ACL approval for every AD alias
 - Manager and VLAN Editor roles
+- VLAN Editors can restart the DHCP service (the restart is global, not VLAN-scoped)
 - Separate built-in Local Manager login
 - Passwordless Read Only mode
 - Server-side VLAN/CIDR enforcement
