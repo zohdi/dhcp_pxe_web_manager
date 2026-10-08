@@ -134,6 +134,14 @@ The ACL starts empty.
 
 An AD account that passes PAM/VAS but is not enabled in the ACL is denied.
 
+## Staged DHCP changes
+
+Web **Add / Edit / Delete** operations write and syntax-validate `dhcpd.conf` without restarting DHCP immediately. Several reservations can be staged and then applied with one **Restart DHCP Service** action.
+
+CLI behavior remains backward-compatible and applies changes immediately unless a caller explicitly opts out.
+
+The Available-IP cache reflects staged `dhcpd.conf` changes before DHCP is restarted.
+
 ## Available IP discovery
 
 The scanner parses live DHCP subnets, dynamic ranges, fixed reservations and active leases; excludes routers/network/broadcast; scans only enabled ACL VLAN mappings; runs Nmap plus optional parallel `ping -c1`; and caches candidates in `data/available_ips.json`.
@@ -143,7 +151,9 @@ sudo python3 refresh_available_ips.py
 sudo ./install_available_ip_timer.sh "$PWD"
 ```
 
-Only Managers can trigger a whole-server refresh from the web UI. VLAN Editors only see candidate IPs in their assigned CIDRs.
+The installer creates a roughly **15-minute** fallback timer and a systemd path watcher for `dhcpd.conf`. Any configuration write triggers the same full scan service. The Available IP page polls the cache every 5 seconds and updates without a full browser refresh.
+
+Managers and VLAN Editors can trigger a full managed-VLAN refresh from the web UI. The scan is global, but each VLAN Editor still sees only candidate IPs inside assigned CIDRs.
 
 ## Local Manager configuration
 
