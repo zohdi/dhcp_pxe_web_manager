@@ -28,7 +28,7 @@
   <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3">
     <div>
       <h3 class="mb-1">Available IPs</h3>
-      <div class="scan-meta">
+      <div class="scan-meta" id="cacheMeta">
         {% if generated_at %}
           Cache generated: <code>{{ generated_at }}</code>
           {% if stale %}<span class="badge bg-warning text-dark ms-2">STALE</span>{% else %}<span class="badge bg-success ms-2">CURRENT</span>{% endif %}
@@ -37,14 +37,13 @@
         {% endif %}
       </div>
       <div class="scan-meta mt-1">Only IPs inside subnets you are authorized to manage are shown.</div>
+      <div class="scan-meta mt-1" id="liveStatus">Live cache sync enabled — checking for updates every 5 seconds.</div>
     </div>
     <div class="d-flex gap-2">
       <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">← Back</a>
-      {% if can_manage_global %}
       <form method="POST" action="{{ url_for('available_ips_refresh') }}" id="refreshScanForm">
         <button class="btn btn-primary" id="refreshScanButton" type="submit">🔎 Refresh Scan</button>
       </form>
-      {% endif %}
     </div>
   </div>
 
@@ -54,9 +53,14 @@
     {% endif %}
   {% endwith %}
 
-  {% if cache_error %}<div class="alert alert-danger">{{ cache_error }}</div>{% endif %}
-  {% if stale and generated_at %}<div class="alert alert-warning">This cache is older than the configured refresh age. A Manager can run a fresh scan now.</div>{% endif %}
+  <div id="cacheError">
+    {% if cache_error %}<div class="alert alert-danger">{{ cache_error }}</div>{% endif %}
+  </div>
+  <div id="cacheWarning">
+    {% if stale and generated_at %}<div class="alert alert-warning">This cache is older than the configured refresh age. A Manager or VLAN Editor can request a fresh full scan.</div>{% endif %}
+  </div>
 
+  <div id="availableIpContent">
   {% if subnets %}
     {% for subnet in subnets %}
       <section class="border rounded p-3 mb-4">
@@ -78,23 +82,144 @@
   {% else %}
     <div class="alert alert-info mb-0">
       No cached available IPs are visible for your authorized subnet scope.
-      {% if can_manage_global %}Run <strong>Refresh Scan</strong> to create/update the cache.{% endif %}
+      Run <strong>Refresh Scan</strong> to create/update the cache.
     </div>
   {% endif %}
+  </div>
 </div>
 
 <script src="{{ url_for('static', filename='flash_auto_dismiss.js') }}"></script>
 <script>
-const refreshForm = document.getElementById('refreshScanForm');
-if (refreshForm) {
-  refreshForm.addEventListener('submit', function () {
-    const button = document.getElementById('refreshScanButton');
-    if (button) {
-      button.disabled = true;
-      button.textContent = '⏳ Scanning...';
+(() => {
+  const DATA_URL = {{ url_for('available_ips_data') | tojson }};
+  const refreshForm = document.getElementById('refreshScanForm');
+  const refreshButton = document.getElementById('refreshScanButton');
+  const cacheMeta = document.getElementById('cacheMeta');
+  const cacheError = document.getElementById('cacheError');
+  const cacheWarning = document.getElementById('cacheWarning');
+  const content = document.getElementById('availableIpContent');
+  const liveStatus = document.getElementById('liveStatus');
+  let lastSignature = null;
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+  }
+
+  function renderPayload(data) {
+    if (data.generated_at) {
+      cacheMeta.innerHTML =
+        'Cache generated: <code>' + escapeHtml(data.generated_at) + '</code>' +
+        (data.stale
+          ? ' <span class="badge bg-warning text-dark ms-2">STALE</span>'
+          : ' <span class="badge bg-success ms-2">CURRENT</span>');
+    } else {
+      cacheMeta.innerHTML = '<span class="badge bg-warning text-dark">NO CACHE YET</span>';
     }
-  });
-}
+
+    cacheError.innerHTML = data.error
+      ? '<div class="alert alert-danger">' + escapeHtml(data.error) + '</div>'
+      : '';
+
+    cacheWarning.innerHTML = data.stale && data.generated_at
+      ? '<div class="alert alert-warning">This cache is older than the configured refresh age. A Manager or VLAN Editor can request a fresh full scan.</div>'
+      : '';
+
+    const subnets = Array.isArray(data.subnets) ? data.subnets : [];
+    if (!subnets.length) {
+      content.innerHTML =
+        '<div class="alert alert-info mb-0">No cached available IPs are visible for your authorized subnet scope. ' +
+        'Run <strong>Refresh Scan</strong> to create/update the cache.</div>';
+      return;
+    }
+
+    content.innerHTML = subnets.map((subnet) => {
+      const ips = Array.isArray(subnet.available_ips) ? subnet.available_ips : [];
+      const ranges = Array.isArray(subnet.dynamic_ranges) ? subnet.dynamic_ranges : [];
+      const rangeText = ranges.length
+        ? '<div class="scan-meta mb-2">Dynamic range(s) excluded: ' +
+          ranges.map((r) => '<code>' + escapeHtml(r.start) + '–' + escapeHtml(r.end) + '</code>').join(', ') +
+          '</div>'
+        : '';
+      const ipHtml = ips.map((ip) => '<div class="ip-pill">' + escapeHtml(ip) + '</div>').join('');
+      return '<section class="border rounded p-3 mb-4">' +
+        '<div class="d-flex justify-content-between align-items-center mb-2">' +
+        '<h5 class="mb-0"><code>' + escapeHtml(subnet.cidr) + '</code></h5>' +
+        '<span class="badge bg-dark">' + ips.length + ' available</span></div>' +
+        rangeText + '<div class="ip-grid">' + ipHtml + '</div></section>';
+    }).join('');
+  }
+
+  async function fetchAvailableIps(forceRender = false) {
+    try {
+      const response = await fetch(DATA_URL, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' }
+      });
+      if (response.redirected) {
+        window.location.assign(response.url);
+        return;
+      }
+      if (!response.ok) {
+        throw new Error('HTTP ' + response.status);
+      }
+      const data = await response.json();
+      const signature = JSON.stringify([
+        data.generated_at_epoch || null,
+        data.stale,
+        data.error || null,
+        data.subnets || []
+      ]);
+      if (forceRender || signature !== lastSignature) {
+        renderPayload(data);
+        lastSignature = signature;
+        liveStatus.textContent = 'Live cache sync — last checked ' + new Date().toLocaleTimeString();
+      }
+    } catch (error) {
+      liveStatus.textContent = 'Live cache sync error: ' + error.message;
+    }
+  }
+
+  if (refreshForm) {
+    refreshForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      refreshButton.disabled = true;
+      refreshButton.textContent = '⏳ Scan requested...';
+      try {
+        const response = await fetch(refreshForm.action, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'X-Requested-With': 'fetch'
+          }
+        });
+        if (response.redirected) {
+          window.location.assign(response.url);
+          return;
+        }
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          throw new Error(data.message || ('HTTP ' + response.status));
+        }
+        liveStatus.textContent = data.message + ' Waiting for the refreshed cache...';
+        window.setTimeout(() => fetchAvailableIps(true), 1500);
+      } catch (error) {
+        liveStatus.textContent = 'Unable to request scan: ' + error.message;
+      } finally {
+        window.setTimeout(() => {
+          refreshButton.disabled = false;
+          refreshButton.textContent = '🔎 Refresh Scan';
+        }, 5000);
+      }
+    });
+  }
+
+  fetchAvailableIps(true);
+  window.setInterval(fetchAvailableIps, 5000);
+})();
 </script>
 </body>
 </html>
