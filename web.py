@@ -751,7 +751,7 @@ def ipxe_dhcp_snippet():
 # ============================================================
 
 @app.route("/restart", methods=["POST"])
-@require_manager
+@require_editor_or_manager
 def restart_dhcp_service():
     success, result = safe_execute(dhcp_mgr.restart_service, config.DHCP_SERVICE)
     if success:

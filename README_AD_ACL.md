@@ -14,7 +14,7 @@ This package is built for **`zohdi/dhcp_pxe_web_manager` `main` branch only**. I
 - Roles: **Manager**, **VLAN Editor**, **Read Only**.
 - VLAN Editor visibility and DHCP reservation add/edit/delete are restricted by assigned VLAN IPv4 CIDRs.
 - VLAN Editors may change **Boot Device** only for IPs inside their assigned VLAN CIDRs.
-- iPXE installation/snippet, DHCP restart, ACL administration, and other global PXE settings remain Manager-only.
+- iPXE installation/snippet, ACL administration, and other global PXE settings remain Manager-only. **DHCP service restart is allowed for both Manager and VLAN Editor roles; the restart affects the whole DHCP service and is not VLAN-scoped.**
 - Manager can edit existing VLAN → CIDR mappings without deleting/recreating them; AD assignments remain attached by VLAN ID.
 - CIDR changes warn before saving if existing DHCP reservations would fall outside the new CIDR.
 - Audit log for ACL/security-sensitive changes.
